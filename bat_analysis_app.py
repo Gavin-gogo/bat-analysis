@@ -240,23 +240,34 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
         .sort_values(['角度', '物種', '高度'])
     )
 
-    # 同時出現：每組配對取兩筆 bat_count 的最大值，再依物種加總
+    # 同時出現：每筆正下最多貢獻一次、每筆側向最多貢獻一次
+    # 先找出所有候選配對，依 max bat_count 由大到小 greedy 配對
     zx_rows = df2_zx.reset_index(drop=True)
     cx_rows = df2_cx.reset_index(drop=True)
 
-    conc_pairs = {}  # (i,j) -> (sp_zx, sp_cx, max_bat_count)
+    all_candidates = []
     for i, row_zx in zx_rows.iterrows():
         for j, row_cx in cx_rows.iterrows():
             if abs(float(row_zx['video_time_sec']) - float(row_cx['video_time_sec'])) < concurrent_threshold:
-                pair_key = (i, j)
-                if pair_key not in conc_pairs:
-                    conc_pairs[pair_key] = (
-                        row_zx['物種'],
-                        row_cx['物種'],
-                        max(int(row_zx['bat_count']), int(row_cx['bat_count']))
-                    )
+                all_candidates.append((
+                    max(int(row_zx['bat_count']), int(row_cx['bat_count'])),
+                    i, j,
+                    row_zx['物種'],
+                    row_cx['物種'],
+                ))
+    all_candidates.sort(reverse=True)  # 優先處理 max 最大的配對
 
-    # 依物種加總各配對的最大值
+    used_zx = set()
+    used_cx = set()
+    conc_pairs = {}  # (zx_i, cx_j) -> (sp_zx, sp_cx, pair_max)
+
+    for pair_max, i, j, sp_zx, sp_cx in all_candidates:
+        if i not in used_zx and j not in used_cx:
+            conc_pairs[(i, j)] = (sp_zx, sp_cx, pair_max)
+            used_zx.add(i)
+            used_cx.add(j)
+
+    # 依物種加總
     species_total = {}
     for (sp_zx, sp_cx, pair_max) in conc_pairs.values():
         if sp_zx == sp_cx:
