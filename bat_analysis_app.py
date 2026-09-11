@@ -149,7 +149,7 @@ section[data-testid="stSidebar"] {
 # ── Core analysis functions ────────────────────────────────────────────────────
 
 def compute_concurrent(df_all: pd.DataFrame, source_zx: pd.DataFrame, source_cx: pd.DataFrame,
-                        threshold: float = 2.0, add_pair_id: bool = False) -> pd.DataFrame:
+                        threshold: float = 2.0, add_pair_id: bool = False):
     """Mark rows where 正下 and 側向 video_time_sec differ < threshold seconds.
     If add_pair_id=True, also adds a '配對組' column (int) so each matched pair shares the same group number.
     """
@@ -179,11 +179,7 @@ def compute_concurrent(df_all: pd.DataFrame, source_zx: pd.DataFrame, source_cx:
             df_all.at[idx, '同時出現'] = 'true'
 
     if add_pair_id:
-        # Assign a group number to each unique pair; rows in the same pair share the same group id.
-        # A row may belong to multiple pairs → assign the first (lowest) group id.
         df_all['配對組'] = pd.NA
-
-        # Map: zx_pos → list of group ids,  cx_pos → list of group ids
         zx_to_group = {}
         cx_to_group = {}
         for group_id, (zx_pos, cx_pos) in enumerate(pairs):
@@ -201,11 +197,11 @@ def compute_concurrent(df_all: pd.DataFrame, source_zx: pd.DataFrame, source_cx:
 
 
 def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_threshold: float):
-    """Main analysis pipeline. Returns (df1, df2, pivot, bat_conc, bird_conc)."""
+    """Main analysis pipeline. Returns (df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, err)."""
     xl = pd.read_excel(uploaded_file, sheet_name=None)
 
     if sheet_zx not in xl or sheet_cx not in xl:
-        return None, None, None, None, None, f"找不到工作表：請確認工作表名稱（{sheet_zx} / {sheet_cx}）"
+        return None, None, None, None, None, None, None, f"找不到工作表：請確認工作表名稱（{sheet_zx} / {sheet_cx}）"
 
     df_zx = xl[sheet_zx].copy()
     df_cx = xl[sheet_cx].copy()
@@ -214,7 +210,7 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
     for label, df in [(sheet_zx, df_zx), (sheet_cx, df_cx)]:
         missing = required_cols - set(df.columns)
         if missing:
-            return None, None, None, None, None, f"工作表「{label}」缺少欄位：{missing}"
+            return None, None, None, None, None, None, None, f"工作表「{label}」缺少欄位：{missing}"
 
     # Sheet 1: all data
     df1 = pd.concat([df_zx, df_cx], ignore_index=True).sort_values('video_time_sec').reset_index(drop=True)
@@ -226,8 +222,7 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
     df2 = pd.concat([df2_zx, df2_cx], ignore_index=True).sort_values('video_time_sec').reset_index(drop=True)
     df2, pairs2 = compute_concurrent(df2, df2_zx, df2_cx, concurrent_threshold, add_pair_id=True)
 
-    # 新增「人工驗證」欄位（下拉選單 true/false，預設空白），緊接在「同時出現」後面
-    # 只有同時出現=true 的列才需要驗證
+    # 新增「人工驗證」欄位，緊接在「同時出現」後面
     conc_col_pos = df2.columns.tolist().index('同時出現')
     df2.insert(conc_col_pos + 1, '人工驗證', '')
 
@@ -240,8 +235,7 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
         .sort_values(['角度', '物種', '高度'])
     )
 
-    # 同時出現：每筆正下最多貢獻一次、每筆側向最多貢獻一次
-    # 先找出所有候選配對，依 max bat_count 由大到小 greedy 配對
+    # 同時出現：greedy 配對，依 max bat_count 由大到小
     zx_rows = df2_zx.reset_index(drop=True)
     cx_rows = df2_cx.reset_index(drop=True)
 
@@ -255,11 +249,11 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
                     row_zx['物種'],
                     row_cx['物種'],
                 ))
-    all_candidates.sort(reverse=True)  # 優先處理 max 最大的配對
+    all_candidates.sort(reverse=True)
 
     used_zx = set()
     used_cx = set()
-    conc_pairs = {}  # (zx_i, cx_j) -> (sp_zx, sp_cx, pair_max)
+    conc_pairs = {}
 
     for pair_max, i, j, sp_zx, sp_cx in all_candidates:
         if i not in used_zx and j not in used_cx:
@@ -267,7 +261,6 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
             used_zx.add(i)
             used_cx.add(j)
 
-    # 依物種加總
     species_total = {}
     for (sp_zx, sp_cx, pair_max) in conc_pairs.values():
         if sp_zx == sp_cx:
@@ -278,8 +271,6 @@ def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_thresho
 
     bat_conc = int(species_total.get('蝙蝠', 0))
     bird_conc = int(species_total.get('鳥', 0))
-
-    # 所有物種的加總（含蝙蝠、鳥及其他）
     conc_species_total = species_total
 
     return df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, None
@@ -301,10 +292,9 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
     H_FILL2 = PatternFill('solid', start_color='70AD47')
     D_FONT = Font(name='Arial', size=10)
 
-    # Pair row colors: alternate between white and light green
     PAIR_FILLS = [
-        PatternFill('solid', start_color='FFFFFF'),   # white
-        PatternFill('solid', start_color='D9F0D3'),   # light green
+        PatternFill('solid', start_color='FFFFFF'),
+        PatternFill('solid', start_color='D9F0D3'),
     ]
 
     def auto_width(ws):
@@ -332,14 +322,8 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
     # ── Sheet 2: CP=0，含人工驗證欄、配對底色 ──────────────────────────────
     ws2 = wb.create_sheet('CP=0資料合併')
 
-    # Build row→group_id mapping from df2's '配對組' column
-    # df2 has '配對組' as a column (int or pd.NA); we use it for coloring
     group_col = '配對組'
-    has_group = group_col in df2.columns
-
-    # Determine which df2 column index is '人工驗證'
     cols = df2.columns.tolist()
-    # Drop '配對組' from output (internal use only)
     output_cols = [c for c in cols if c != group_col]
     manval_col_idx = output_cols.index('人工驗證') + 1  # 1-based Excel col
 
@@ -350,8 +334,6 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
         c.alignment = Alignment(horizontal='center')
         c.border = thin
 
-    # Assign alternating color per group_id
-    # group_id → color index (0 or 1)
     group_color_map = {}
     color_counter = 0
 
@@ -359,7 +341,6 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
         row_dict = dict(zip(df2.columns, row_data))
         gid = row_dict.get(group_col, pd.NA)
 
-        # Determine fill color
         if pd.notna(gid):
             gid_int = int(gid)
             if gid_int not in group_color_map:
@@ -367,7 +348,7 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
                 color_counter += 1
             fill = PAIR_FILLS[group_color_map[gid_int]]
         else:
-            fill = None  # no color for non-concurrent rows
+            fill = None
 
         for ci, col in enumerate(output_cols, 1):
             val = row_dict[col]
@@ -377,8 +358,6 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
                 c.fill = fill
 
     # Add data validation (dropdown: true / false) on '人工驗證' column
-    from openpyxl.worksheet.cell_range import CellRange
-
     last_row = len(df2) + 1
     sqref_str = f"{get_column_letter(manval_col_idx)}2:{get_column_letter(manval_col_idx)}{last_row}"
 
@@ -390,10 +369,9 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
         showErrorMessage=True,
         errorTitle='輸入錯誤',
         error='請選擇 true 或 false',
-        sqref=CellRange(sqref_str),
     )
+    dv.add(sqref_str)
     ws2.add_data_validation(dv)
-    
 
     auto_width(ws2)
 
@@ -439,7 +417,6 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
         ws3.cell(row, 2, cnt).font = D_FONT; ws3.cell(row, 2).border = thin; ws3.cell(row, 2).alignment = Alignment(horizontal='center')
         grand_total += cnt
         row += 1
-    # Grand total row
     for ci, val in enumerate(['合計', grand_total], 1):
         c = ws3.cell(row, ci, val)
         c.font = Font(bold=True, name='Arial'); c.border = thin
@@ -490,7 +467,9 @@ uploaded = st.file_uploader("選擇 Excel 檔案（.xlsx）", type=["xlsx"], lab
 
 if uploaded:
     with st.spinner("分析中..."):
-        df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, err = run_analysis(uploaded, sheet_zx, sheet_cx, threshold)
+        df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, err = run_analysis(
+            uploaded, sheet_zx, sheet_cx, threshold
+        )
 
     if err:
         st.error(f"❌ {err}")
