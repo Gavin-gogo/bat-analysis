@@ -377,18 +377,23 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
                 c.fill = fill
 
     # Add data validation (dropdown: true / false) on '人工驗證' column
+    from openpyxl.worksheet.cell_range import CellRange
+
+    last_row = len(df2) + 1
+    sqref_str = f"{get_column_letter(manval_col_idx)}2:{get_column_letter(manval_col_idx)}{last_row}"
+
     dv = DataValidation(
         type="list",
         formula1='"true,false"',
         allow_blank=True,
-        showDropDown=False,  # False = show the dropdown arrow
+        showDropDown=False,
         showErrorMessage=True,
         errorTitle='輸入錯誤',
         error='請選擇 true 或 false',
+        sqref=CellRange(sqref_str),
     )
-    last_row = len(df2) + 1
-    dv.sqref = f"{get_column_letter(manval_col_idx)}2:{get_column_letter(manval_col_idx)}{last_row}"
     ws2.add_data_validation(dv)
+    
 
     auto_width(ws2)
 
