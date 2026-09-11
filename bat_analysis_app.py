@@ -27,7 +27,6 @@ html, body, [class*="css"] {
     color: #e8eaf0;
 }
 
-/* Header */
 .hero {
     background: linear-gradient(135deg, #1a1f35 0%, #0d1b2a 50%, #1a1f35 100%);
     border: 1px solid #2a3550;
@@ -58,7 +57,6 @@ html, body, [class*="css"] {
     margin: 0;
 }
 
-/* Upload zone */
 .upload-zone {
     background: #161b2e;
     border: 2px dashed #2a3a5e;
@@ -69,31 +67,6 @@ html, body, [class*="css"] {
 }
 .upload-zone:hover { border-color: #63b3ed; }
 
-/* Metric cards */
-.metric-row { display: flex; gap: 1rem; margin: 1rem 0; }
-.metric-card {
-    flex: 1;
-    background: #161b2e;
-    border: 1px solid #2a3550;
-    border-radius: 12px;
-    padding: 1.25rem 1.5rem;
-}
-.metric-card .label {
-    font-size: 0.78rem;
-    color: #6b7a99;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 0.4rem;
-}
-.metric-card .value {
-    font-family: 'Space Mono', monospace;
-    font-size: 2rem;
-    font-weight: 700;
-    color: #63b3ed;
-}
-.metric-card .sub { font-size: 0.8rem; color: #8896b3; }
-
-/* Section headers */
 .section-header {
     font-family: 'Space Mono', monospace;
     font-size: 0.85rem;
@@ -105,10 +78,8 @@ html, body, [class*="css"] {
     margin: 2rem 0 1rem 0;
 }
 
-/* Dataframe styling */
 .stDataFrame { border-radius: 10px; overflow: hidden; }
 
-/* Download button */
 .stDownloadButton > button {
     background: linear-gradient(135deg, #2b6cb0, #2c5282) !important;
     color: white !important;
@@ -122,7 +93,6 @@ html, body, [class*="css"] {
 }
 .stDownloadButton > button:hover { opacity: 0.85 !important; }
 
-/* Badge */
 .badge {
     display: inline-block;
     background: #1e3a5f;
@@ -137,7 +107,6 @@ html, body, [class*="css"] {
 .tag-true { color: #68d391; font-weight: 700; }
 .tag-false { color: #718096; }
 
-/* Sidebar */
 section[data-testid="stSidebar"] {
     background: #0d1117 !important;
     border-right: 1px solid #1e2433;
@@ -150,14 +119,11 @@ section[data-testid="stSidebar"] {
 
 def compute_concurrent(df_all: pd.DataFrame, source_zx: pd.DataFrame, source_cx: pd.DataFrame,
                         threshold: float = 2.0, add_pair_id: bool = False):
-    """Mark rows where 正下 and 側向 video_time_sec differ < threshold seconds.
-    If add_pair_id=True, also adds a '配對組' column (int) so each matched pair shares the same group number.
-    """
+    """Mark rows where 正下 and 側向 video_time_sec differ < threshold seconds."""
     times_zx = source_zx['video_time_sec'].values
     times_cx = source_cx['video_time_sec'].values
 
-    # Build list of all pairs
-    pairs = []  # [(zx_pos, cx_pos), ...]
+    pairs = []
     for i, ta in enumerate(times_zx):
         for j, tb in enumerate(times_cx):
             if abs(float(ta) - float(tb)) < threshold:
@@ -185,7 +151,6 @@ def compute_concurrent(df_all: pd.DataFrame, source_zx: pd.DataFrame, source_cx:
         for group_id, (zx_pos, cx_pos) in enumerate(pairs):
             zx_to_group.setdefault(zx_pos, group_id)
             cx_to_group.setdefault(cx_pos, group_id)
-
         for pos, idx in enumerate(zx_idx):
             if pos in zx_to_group:
                 df_all.at[idx, '配對組'] = zx_to_group[pos]
@@ -197,81 +162,119 @@ def compute_concurrent(df_all: pd.DataFrame, source_zx: pd.DataFrame, source_cx:
 
 
 def run_analysis(uploaded_file, sheet_zx: str, sheet_cx: str, concurrent_threshold: float):
-    """Main analysis pipeline. Returns (df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, err)."""
+    """Main analysis pipeline.
+    Returns (df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, err).
+    CP / 物種 / 高度 欄位允許空白。
+    """
     xl = pd.read_excel(uploaded_file, sheet_name=None)
 
     if sheet_zx not in xl or sheet_cx not in xl:
-        return None, None, None, None, None, None, None, f"找不到工作表：請確認工作表名稱（{sheet_zx} / {sheet_cx}）"
+        return None, None, None, None, None, None, None, \
+            f"找不到工作表：請確認工作表名稱（{sheet_zx} / {sheet_cx}）"
 
     df_zx = xl[sheet_zx].copy()
     df_cx = xl[sheet_cx].copy()
 
-    required_cols = {'video_time_sec', 'CP', '角度', '物種', '高度', 'bat_count'}
+    # Only video_time_sec and 角度 are strictly required
+    required_cols = {'video_time_sec', '角度'}
     for label, df in [(sheet_zx, df_zx), (sheet_cx, df_cx)]:
         missing = required_cols - set(df.columns)
         if missing:
-            return None, None, None, None, None, None, None, f"工作表「{label}」缺少欄位：{missing}"
+            return None, None, None, None, None, None, None, \
+                f"工作表「{label}」缺少必要欄位：{missing}"
 
-    # Sheet 1: all data
-    df1 = pd.concat([df_zx, df_cx], ignore_index=True).sort_values('video_time_sec').reset_index(drop=True)
-    df1, _ = compute_concurrent(df1, df_zx.reset_index(drop=True), df_cx.reset_index(drop=True), concurrent_threshold)
+    # Ensure optional columns exist (fill with NaN if absent)
+    for col in ['物種', 'bat_count', 'CP', '高度']:
+        if col not in df_zx.columns:
+            df_zx[col] = np.nan
+        if col not in df_cx.columns:
+            df_cx[col] = np.nan
 
-    # Sheet 2: CP=0
-    df2_zx = df_zx[df_zx['CP'] == 0].reset_index(drop=True)
-    df2_cx = df_cx[df_cx['CP'] == 0].reset_index(drop=True)
-    df2 = pd.concat([df2_zx, df2_cx], ignore_index=True).sort_values('video_time_sec').reset_index(drop=True)
-    df2, pairs2 = compute_concurrent(df2, df2_zx, df2_cx, concurrent_threshold, add_pair_id=True)
+    # bat_count: fill missing with 1 so arithmetic still works
+    df_zx['bat_count'] = pd.to_numeric(df_zx['bat_count'], errors='coerce').fillna(1).astype(int)
+    df_cx['bat_count'] = pd.to_numeric(df_cx['bat_count'], errors='coerce').fillna(1).astype(int)
 
-    # 新增「人工驗證」欄位，緊接在「同時出現」後面
-    conc_col_pos = df2.columns.tolist().index('同時出現')
-    df2.insert(conc_col_pos + 1, '人工驗證', '')
+    # CP: keep NaN as-is; comparison CP == 0 returns False for NaN (safe)
+    df_zx['CP'] = pd.to_numeric(df_zx['CP'], errors='coerce')
+    df_cx['CP'] = pd.to_numeric(df_cx['CP'], errors='coerce')
 
-    # Sheet 3 pivot
-    pivot = (
-        df2.groupby(['角度', '物種', '高度'])['bat_count']
-        .sum()
-        .reset_index()
-        .rename(columns={'bat_count': '數量(bat_count加總)'})
-        .sort_values(['角度', '物種', '高度'])
+    # ── Sheet 1: all data ────────────────────────────────────────────────────
+    df1 = (pd.concat([df_zx, df_cx], ignore_index=True)
+             .sort_values('video_time_sec')
+             .reset_index(drop=True))
+    df1, _ = compute_concurrent(
+        df1,
+        df_zx.reset_index(drop=True),
+        df_cx.reset_index(drop=True),
+        concurrent_threshold,
     )
 
-    # 同時出現：greedy 配對，依 max bat_count 由大到小
-    zx_rows = df2_zx.reset_index(drop=True)
-    cx_rows = df2_cx.reset_index(drop=True)
+    # ── Sheet 2: CP=0 only (may be empty) ───────────────────────────────────
+    df2_zx = df_zx[df_zx['CP'] == 0].reset_index(drop=True)
+    df2_cx = df_cx[df_cx['CP'] == 0].reset_index(drop=True)
+    df2 = (pd.concat([df2_zx, df2_cx], ignore_index=True)
+             .sort_values('video_time_sec')
+             .reset_index(drop=True))
 
-    all_candidates = []
-    for i, row_zx in zx_rows.iterrows():
-        for j, row_cx in cx_rows.iterrows():
-            if abs(float(row_zx['video_time_sec']) - float(row_cx['video_time_sec'])) < concurrent_threshold:
-                all_candidates.append((
-                    max(int(row_zx['bat_count']), int(row_cx['bat_count'])),
-                    i, j,
-                    row_zx['物種'],
-                    row_cx['物種'],
-                ))
-    all_candidates.sort(reverse=True)
+    df2, pairs2 = compute_concurrent(df2, df2_zx, df2_cx, concurrent_threshold, add_pair_id=True)
 
-    used_zx = set()
-    used_cx = set()
-    conc_pairs = {}
+    # Insert 人工驗證 column right after 同時出現
+    if '同時出現' in df2.columns:
+        conc_col_pos = df2.columns.tolist().index('同時出現')
+        df2.insert(conc_col_pos + 1, '人工驗證', '')
 
-    for pair_max, i, j, sp_zx, sp_cx in all_candidates:
-        if i not in used_zx and j not in used_cx:
-            conc_pairs[(i, j)] = (sp_zx, sp_cx, pair_max)
-            used_zx.add(i)
-            used_cx.add(j)
+    # ── Sheet 3 pivot (empty-safe) ───────────────────────────────────────────
+    if len(df2) > 0 and df2['物種'].notna().any() and df2['高度'].notna().any():
+        pivot = (
+            df2.dropna(subset=['物種', '高度'])
+               .groupby(['角度', '物種', '高度'])['bat_count']
+               .sum()
+               .reset_index()
+               .rename(columns={'bat_count': '數量(bat_count加總)'})
+               .sort_values(['角度', '物種', '高度'])
+        )
+    else:
+        pivot = pd.DataFrame(columns=['角度', '物種', '高度', '數量(bat_count加總)'])
 
-    species_total = {}
-    for (sp_zx, sp_cx, pair_max) in conc_pairs.values():
-        if sp_zx == sp_cx:
-            species_total[sp_zx] = species_total.get(sp_zx, 0) + pair_max
-        else:
-            species_total[sp_zx] = species_total.get(sp_zx, 0) + pair_max
-            species_total[sp_cx] = species_total.get(sp_cx, 0) + pair_max
+    # ── Concurrent pair stats (greedy, empty-safe) ───────────────────────────
+    conc_species_total = {}
+    bat_conc = 0
+    bird_conc = 0
 
-    bat_conc = int(species_total.get('蝙蝠', 0))
-    bird_conc = int(species_total.get('鳥', 0))
-    conc_species_total = species_total
+    if len(df2_zx) > 0 and len(df2_cx) > 0:
+        all_candidates = []
+        for i, row_zx in df2_zx.iterrows():
+            for j, row_cx in df2_cx.iterrows():
+                if abs(float(row_zx['video_time_sec']) - float(row_cx['video_time_sec'])) < concurrent_threshold:
+                    all_candidates.append((
+                        max(int(row_zx['bat_count']), int(row_cx['bat_count'])),
+                        i, j,
+                        row_zx['物種'],
+                        row_cx['物種'],
+                    ))
+        all_candidates.sort(reverse=True)
+
+        used_zx, used_cx = set(), set()
+        conc_pairs = {}
+        for pair_max, i, j, sp_zx, sp_cx in all_candidates:
+            if i not in used_zx and j not in used_cx:
+                conc_pairs[(i, j)] = (sp_zx, sp_cx, pair_max)
+                used_zx.add(i)
+                used_cx.add(j)
+
+        for sp_zx, sp_cx, pair_max in conc_pairs.values():
+            if pd.isna(sp_zx) and pd.isna(sp_cx):
+                continue
+            if sp_zx == sp_cx:
+                key = sp_zx if pd.notna(sp_zx) else '未知'
+                conc_species_total[key] = conc_species_total.get(key, 0) + pair_max
+            else:
+                for sp in [sp_zx, sp_cx]:
+                    if pd.notna(sp):
+                        conc_species_total[sp] = conc_species_total.get(sp, 0) + pair_max
+
+        bat_conc = int(conc_species_total.get('蝙蝠', 0))
+        bird_conc = int(conc_species_total.get('鳥', 0))
 
     return df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total, None
 
@@ -285,13 +288,12 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
     wb = Workbook()
     thin = Border(
         left=Side(style='thin'), right=Side(style='thin'),
-        top=Side(style='thin'), bottom=Side(style='thin')
+        top=Side(style='thin'), bottom=Side(style='thin'),
     )
-    H_FONT = Font(bold=True, color='FFFFFF', name='Arial', size=10)
-    H_FILL = PatternFill('solid', start_color='2E75B6')
+    H_FONT  = Font(bold=True, color='FFFFFF', name='Arial', size=10)
+    H_FILL  = PatternFill('solid', start_color='2E75B6')
     H_FILL2 = PatternFill('solid', start_color='70AD47')
-    D_FONT = Font(name='Arial', size=10)
-
+    D_FONT  = Font(name='Arial', size=10)
     PAIR_FILLS = [
         PatternFill('solid', start_color='FFFFFF'),
         PatternFill('solid', start_color='D9F0D3'),
@@ -314,18 +316,15 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
                 c.font = D_FONT; c.border = thin
         auto_width(ws)
 
-    # Sheet 1
+    # ── Sheet 1 ──────────────────────────────────────────────────────────────
     ws1 = wb.active
     ws1.title = '全部資料合併'
     write_df(ws1, df1)
 
-    # ── Sheet 2: CP=0，含人工驗證欄、配對底色 ──────────────────────────────
+    # ── Sheet 2: CP=0，含人工驗證欄、配對底色 ───────────────────────────────
     ws2 = wb.create_sheet('CP=0資料合併')
-
     group_col = '配對組'
-    cols = df2.columns.tolist()
-    output_cols = [c for c in cols if c != group_col]
-    manval_col_idx = output_cols.index('人工驗證') + 1  # 1-based Excel col
+    output_cols = [c for c in df2.columns if c != group_col]
 
     # Write header
     for ci, col in enumerate(output_cols, 1):
@@ -334,69 +333,86 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
         c.alignment = Alignment(horizontal='center')
         c.border = thin
 
-    group_color_map = {}
-    color_counter = 0
+    if len(df2) == 0:
+        # Write a placeholder row so the sheet is not completely empty
+        ws2.cell(2, 1, '（無 CP=0 資料）').font = D_FONT
+    else:
+        group_color_map = {}
+        color_counter   = 0
 
-    for ri, row_data in enumerate(df2.itertuples(index=False), 2):
-        row_dict = dict(zip(df2.columns, row_data))
-        gid = row_dict.get(group_col, pd.NA)
+        for ri, row_data in enumerate(df2.itertuples(index=False), 2):
+            row_dict = dict(zip(df2.columns, row_data))
+            gid = row_dict.get(group_col, pd.NA)
 
-        if pd.notna(gid):
-            gid_int = int(gid)
-            if gid_int not in group_color_map:
-                group_color_map[gid_int] = color_counter % 2
-                color_counter += 1
-            fill = PAIR_FILLS[group_color_map[gid_int]]
-        else:
-            fill = None
+            if pd.notna(gid):
+                gid_int = int(gid)
+                if gid_int not in group_color_map:
+                    group_color_map[gid_int] = color_counter % 2
+                    color_counter += 1
+                fill = PAIR_FILLS[group_color_map[gid_int]]
+            else:
+                fill = None
 
-        for ci, col in enumerate(output_cols, 1):
-            val = row_dict[col]
-            c = ws2.cell(ri, ci, val if pd.notna(val) else '')
-            c.font = D_FONT; c.border = thin
-            if fill:
-                c.fill = fill
+            for ci, col in enumerate(output_cols, 1):
+                val = row_dict[col]
+                c = ws2.cell(ri, ci, val if pd.notna(val) else '')
+                c.font = D_FONT; c.border = thin
+                if fill:
+                    c.fill = fill
 
-    # Add data validation (dropdown: true / false) on '人工驗證' column
-    last_row = len(df2) + 1
-    sqref_str = f"{get_column_letter(manval_col_idx)}2:{get_column_letter(manval_col_idx)}{last_row}"
-
-    dv = DataValidation(
-        type="list",
-        formula1='"true,false"',
-        allow_blank=True,
-        showDropDown=False,
-        showErrorMessage=True,
-        errorTitle='輸入錯誤',
-        error='請選擇 true 或 false',
-    )
-    dv.add(sqref_str)
-    ws2.add_data_validation(dv)
+        # Data validation dropdown on '人工驗證' column (only when rows exist)
+        if '人工驗證' in output_cols:
+            manval_col_idx = output_cols.index('人工驗證') + 1
+            last_row = len(df2) + 1
+            sqref_str = (
+                f"{get_column_letter(manval_col_idx)}2:"
+                f"{get_column_letter(manval_col_idx)}{last_row}"
+            )
+            dv = DataValidation(
+                type="list",
+                formula1='"true,false"',
+                allow_blank=True,
+                showDropDown=False,
+                showErrorMessage=True,
+                errorTitle='輸入錯誤',
+                error='請選擇 true 或 false',
+            )
+            dv.add(sqref_str)
+            ws2.add_data_validation(dv)
 
     auto_width(ws2)
 
-    # Sheet 3
+    # ── Sheet 3: 總成果表 ─────────────────────────────────────────────────────
     ws3 = wb.create_sheet('總成果表')
     ws3.merge_cells('A1:D1')
     ws3['A1'] = '總成果表（CP=0）'
-    ws3['A1'].font = Font(bold=True, name='Arial', size=14, color='1F3864')
+    ws3['A1'].font      = Font(bold=True, name='Arial', size=14, color='1F3864')
     ws3['A1'].alignment = Alignment(horizontal='center')
 
     row = 3
     ws3.cell(row, 1, '各角度 / 物種 / 高度 數量統計（bat_count 加總）').font = Font(bold=True, name='Arial', size=11)
     row += 1
+
     for ci, h in enumerate(['角度', '物種', '高度', '數量(bat_count加總)'], 1):
         c = ws3.cell(row, ci, h)
         c.font = H_FONT; c.fill = H_FILL
         c.alignment = Alignment(horizontal='center'); c.border = thin
     row += 1
-    for _, r in pivot.iterrows():
-        vals = [r['角度'], r['物種'], int(r['高度']), int(r['數量(bat_count加總)'])]
-        for ci, val in enumerate(vals, 1):
-            c = ws3.cell(row, ci, val)
-            c.font = D_FONT; c.border = thin; c.alignment = Alignment(horizontal='center')
+
+    if len(pivot) == 0:
+        ws3.cell(row, 1, '（無 CP=0 且含物種/高度資料）').font = D_FONT
         row += 1
-    total = int(pivot['數量(bat_count加總)'].sum())
+        total = 0
+    else:
+        for _, r in pivot.iterrows():
+            vals = [r['角度'], r['物種'], int(r['高度']), int(r['數量(bat_count加總)'])]
+            for ci, val in enumerate(vals, 1):
+                c = ws3.cell(row, ci, val)
+                c.font = D_FONT; c.border = thin
+                c.alignment = Alignment(horizontal='center')
+            row += 1
+        total = int(pivot['數量(bat_count加總)'].sum())
+
     for ci, val in enumerate(['合計', '', '', total], 1):
         c = ws3.cell(row, ci, val)
         c.font = Font(bold=True, name='Arial'); c.border = thin
@@ -404,25 +420,38 @@ def build_excel(df1: pd.DataFrame, df2: pd.DataFrame, pairs2: list,
         c.alignment = Alignment(horizontal='center')
     row += 2
 
-    ws3.cell(row, 1, '同時出現（正下 ↔ 側向 video_time_sec 相差 < 2 秒）各配對取 bat_count 最大值後加總').font = Font(bold=True, name='Arial', size=11)
+    ws3.cell(row, 1,
+        '同時出現（正下 ↔ 側向 video_time_sec 相差 < 2 秒）各配對取 bat_count 最大值後加總'
+    ).font = Font(bold=True, name='Arial', size=11)
     row += 1
+
     for ci, h in enumerate(['物種', '數量（配對最大值加總）'], 1):
         c = ws3.cell(row, ci, h)
         c.font = H_FONT; c.fill = H_FILL2
         c.alignment = Alignment(horizontal='center'); c.border = thin
     row += 1
+
     grand_total = 0
-    for sp, cnt in conc_species_total.items():
-        ws3.cell(row, 1, sp).font = D_FONT; ws3.cell(row, 1).border = thin; ws3.cell(row, 1).alignment = Alignment(horizontal='center')
-        ws3.cell(row, 2, cnt).font = D_FONT; ws3.cell(row, 2).border = thin; ws3.cell(row, 2).alignment = Alignment(horizontal='center')
-        grand_total += cnt
+    if conc_species_total:
+        for sp, cnt in conc_species_total.items():
+            ws3.cell(row, 1, sp).font  = D_FONT
+            ws3.cell(row, 1).border    = thin
+            ws3.cell(row, 1).alignment = Alignment(horizontal='center')
+            ws3.cell(row, 2, cnt).font  = D_FONT
+            ws3.cell(row, 2).border     = thin
+            ws3.cell(row, 2).alignment  = Alignment(horizontal='center')
+            grand_total += cnt
+            row += 1
+    else:
+        ws3.cell(row, 1, '（無同時出現配對）').font = D_FONT
         row += 1
+
     for ci, val in enumerate(['合計', grand_total], 1):
         c = ws3.cell(row, ci, val)
         c.font = Font(bold=True, name='Arial'); c.border = thin
         c.fill = PatternFill('solid', start_color='C6EFCE')
         c.alignment = Alignment(horizontal='center')
-    row += 1
+
     auto_width(ws3)
 
     buf = BytesIO()
@@ -439,29 +468,30 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar settings
 with st.sidebar:
     st.markdown("### ⚙️ 分析設定")
     st.markdown("---")
-    sheet_zx = st.text_input("正下 工作表名稱", value="正下")
-    sheet_cx = st.text_input("側向 工作表名稱", value="側向")
+    sheet_zx  = st.text_input("正下 工作表名稱", value="正下")
+    sheet_cx  = st.text_input("側向 工作表名稱", value="側向")
     threshold = st.slider(
         "同時出現閾值（秒）",
         min_value=0.5, max_value=10.0, value=2.0, step=0.5,
-        help="正下與側向 video_time_sec 相差小於此值，即標記為同時出現"
+        help="正下與側向 video_time_sec 相差小於此值，即標記為同時出現",
     )
     st.markdown("---")
-    st.markdown("**所需欄位**")
+    st.markdown("**必要欄位**")
     st.markdown("""
     - `角度`
     - `video_time_sec`
+    """)
+    st.markdown("**選填欄位**（空白視為無偵測）")
+    st.markdown("""
     - `物種`
     - `bat_count`
     - `CP`
     - `高度`
     """)
 
-# File upload
 st.markdown('<div class="section-header">上傳檔案</div>', unsafe_allow_html=True)
 uploaded = st.file_uploader("選擇 Excel 檔案（.xlsx）", type=["xlsx"], label_visibility="collapsed")
 
@@ -482,41 +512,58 @@ if uploaded:
         with c2:
             st.metric("CP=0 資料（筆）", f"{len(df2):,}")
         with c3:
-            st.metric("同時出現（筆）", f"{(df2['同時出現']=='true').sum()}")
+            simul_count = int((df2['同時出現'] == 'true').sum()) if len(df2) > 0 else 0
+            st.metric("同時出現（筆）", simul_count)
         with c4:
             st.metric("同時出現 蝙蝠", f"{bat_conc} 隻")
         with c5:
             st.metric("同時出現 鳥", f"{bird_conc} 隻")
 
         # ── Tabs ─────────────────────────────────────────────────────────────
-        tab1, tab2, tab3 = st.tabs(["📋 工作表1：全部資料", "📋 工作表2：CP=0", "📊 工作表3：總成果表"])
+        tab1, tab2, tab3 = st.tabs([
+            "📋 工作表1：全部資料",
+            "📋 工作表2：CP=0",
+            "📊 工作表3：總成果表",
+        ])
 
         with tab1:
-            st.markdown(f"共 **{len(df1):,}** 筆，同時出現標記 **{(df1['同時出現']=='true').sum()}** 筆")
+            simul1 = int((df1['同時出現'] == 'true').sum())
+            st.markdown(f"共 **{len(df1):,}** 筆，同時出現標記 **{simul1}** 筆")
             st.dataframe(df1, use_container_width=True, height=400)
 
         with tab2:
-            st.markdown(f"共 **{len(df2):,}** 筆，bat_count 總和 **{int(df2['bat_count'].sum())}**，同時出現標記 **{(df2['同時出現']=='true').sum()}** 筆")
-            display_df2 = df2.drop(columns=['配對組'], errors='ignore')
-            st.dataframe(display_df2, use_container_width=True, height=400)
+            if len(df2) == 0:
+                st.info("此檔案中沒有 CP=0 的資料。")
+            else:
+                bat_sum = int(df2['bat_count'].sum())
+                simul2  = int((df2['同時出現'] == 'true').sum())
+                st.markdown(f"共 **{len(df2):,}** 筆，bat_count 總和 **{bat_sum}**，同時出現標記 **{simul2}** 筆")
+                display_df2 = df2.drop(columns=['配對組'], errors='ignore')
+                st.dataframe(display_df2, use_container_width=True, height=400)
 
         with tab3:
             col_a, col_b = st.columns([2, 1])
             with col_a:
                 st.markdown("#### 各角度／物種／高度數量（bat_count加總）")
-                st.dataframe(pivot, use_container_width=True)
-                st.markdown(f"**合計：{int(pivot['數量(bat_count加總)'].sum())} 隻**")
+                if len(pivot) == 0:
+                    st.info("無 CP=0 且含物種／高度的資料可統計。")
+                else:
+                    st.dataframe(pivot, use_container_width=True)
+                    st.markdown(f"**合計：{int(pivot['數量(bat_count加總)'].sum())} 隻**")
             with col_b:
                 st.markdown("#### 同時出現（配對最大值加總）")
-                conc_df = pd.DataFrame({
-                    '物種': list(conc_species_total.keys()) + ['合計'],
-                    '數量': list(conc_species_total.values()) + [sum(conc_species_total.values())]
-                })
-                st.dataframe(conc_df, use_container_width=True, hide_index=True)
+                if conc_species_total:
+                    conc_df = pd.DataFrame({
+                        '物種': list(conc_species_total.keys()) + ['合計'],
+                        '數量': list(conc_species_total.values()) + [sum(conc_species_total.values())],
+                    })
+                    st.dataframe(conc_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("無同時出現配對。")
 
         # ── Download ─────────────────────────────────────────────────────────
         st.markdown('<div class="section-header">下載結果</div>', unsafe_allow_html=True)
-        xlsx_bytes = build_excel(df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total)
+        xlsx_bytes    = build_excel(df1, df2, pairs2, pivot, bat_conc, bird_conc, conc_species_total)
         original_name = uploaded.name.replace('.xlsx', '')
         st.download_button(
             label="⬇️  下載分析結果 Excel",
